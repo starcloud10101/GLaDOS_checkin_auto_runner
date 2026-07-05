@@ -1,5 +1,6 @@
 name: 开始每日签到
 
+# Standalone repository workflow.
 on:
   workflow_dispatch:
   schedule:
