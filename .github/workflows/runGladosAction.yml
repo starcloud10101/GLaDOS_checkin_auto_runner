@@ -4,8 +4,8 @@ name: 开始每日签到
 on:
   workflow_dispatch:
   schedule:
-    # UTC 1点30分(北京时间 9点30分)
-    - cron: 30 1 * * *
+    # Temporary schedule verification at UTC 05:24.
+    - cron: 24 5 * * *
   # 标星时触发工作流程
   watch:
     types: [started]
