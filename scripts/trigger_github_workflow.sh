@@ -4,19 +4,47 @@ set -euo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 REPO="starcloud10101/GLaDOS_checkin_auto_runner"
-WORKFLOW_NAME="开始每日签到"
 WORKFLOW_FILE="runGladosAction.yml"
+GH_BIN="${GLADOS_GH_BIN:-/opt/homebrew/bin/gh}"
+WORKFLOW_API="repos/$REPO/actions/workflows/$WORKFLOW_FILE"
 
-cd "/Users/nebula/GLaDOS_checkin_auto"
+log() {
+  print -r -- "$(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M:%S') $*" >&2
+}
 
-runs_json="$(gh run list \
-  --repo "$REPO" \
-  --workflow "$WORKFLOW_NAME" \
-  --limit 20 \
-  --json status,conclusion,createdAt,event)"
-export RUNS_JSON="$runs_json"
+# Retry reads and the idempotent enable operation, not dispatch POSTs.
+api_retry() {
+  local attempt result
+  for attempt in 1 2 3; do
+    if result="$("$GH_BIN" api "$@" 2>&1)"; then
+      print -r -- "$result"
+      return 0
+    fi
+    log "GitHub API attempt $attempt/3 failed: $result"
+    if (( attempt < 3 )); then
+      sleep $((attempt * 2))
+    fi
+  done
+  return 1
+}
 
-if /usr/bin/python3 - <<'PY'
+workflow_state="$(api_retry "$WORKFLOW_API" --jq .state)" || exit 1
+case "$workflow_state" in
+  disabled_inactivity)
+    log "Workflow disabled due to inactivity; restoring it."
+    api_retry --method PUT "$WORKFLOW_API/enable" >/dev/null || exit 1
+    workflow_state="$(api_retry "$WORKFLOW_API" --jq .state)" || exit 1
+    ;;
+esac
+if [[ "$workflow_state" != active ]]; then
+  log "Workflow state is $workflow_state; no dispatch or automatic override."
+  exit 1
+fi
+
+runs_json="$(api_retry "$WORKFLOW_API/runs?per_page=100" \
+  --jq '{workflow_runs: [.workflow_runs[] | {created_at, status, conclusion}]}')" || exit 1
+
+if RUNS_JSON="$runs_json" /usr/bin/python3 - <<'PY'
 import json
 import os
 import sys
@@ -24,24 +52,42 @@ from datetime import datetime, timezone, timedelta
 
 tz = timezone(timedelta(hours=8))
 today = datetime.now(tz).date()
-runs = json.loads(os.environ.get("RUNS_JSON", "[]"))
+try:
+    runs = json.loads(os.environ["RUNS_JSON"])["workflow_runs"]
+    if not isinstance(runs, list):
+        raise ValueError("workflow_runs must be a list")
+except (KeyError, ValueError, TypeError):
+    sys.exit(2)
 
-for run in runs:
-    created = run.get("createdAt")
-    if not created:
-        continue
-    created_at = datetime.fromisoformat(created.replace("Z", "+00:00")).astimezone(tz)
-    if created_at.date() != today:
-        continue
-    if run.get("conclusion") == "success" or run.get("status") in {"queued", "in_progress"}:
-        sys.exit(0)
+try:
+    for run in runs:
+        created = run["created_at"]
+        created_at = datetime.fromisoformat(created.replace("Z", "+00:00")).astimezone(tz)
+        if created_at.date() != today:
+            continue
+        if run.get("conclusion") == "success" or run.get("status") in {
+            "queued", "in_progress", "requested", "waiting", "pending"
+        }:
+            sys.exit(0)
+except (KeyError, ValueError, TypeError, AttributeError):
+    sys.exit(2)
 
 sys.exit(1)
 PY
 then
-  echo "$(date '+%Y-%m-%d %H:%M:%S') Already checked in or running today; skipping fallback trigger."
+  log "Today's workflow succeeded or is pending; skipping fallback trigger."
   exit 0
+else
+  decision=$?
+  if (( decision != 1 )); then
+    log "Cannot validate workflow run data; refusing to guess."
+    exit 1
+  fi
 fi
 
-gh workflow run "$WORKFLOW_FILE" --repo "$REPO" --ref master
-echo "$(date '+%Y-%m-%d %H:%M:%S') Triggered $WORKFLOW_FILE in $REPO."
+if "$GH_BIN" api --method POST "$WORKFLOW_API/dispatches" -f ref=master; then
+  log "Triggered $WORKFLOW_FILE in $REPO; completion still needs verification."
+else
+  log "Dispatch failed or its result is unknown; check GitHub runs before retrying."
+  exit 1
+fi
