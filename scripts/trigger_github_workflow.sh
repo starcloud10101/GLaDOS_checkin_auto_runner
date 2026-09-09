@@ -12,6 +12,11 @@ log() {
   print -r -- "$(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M:%S') $*" >&2
 }
 
+if [[ "${1:-}" == "--scheduled" && "$(TZ=Asia/Taipei date '+%H%M')" < "0930" ]]; then
+  log "Before the daily check-in window; waiting until 09:30 Taipei time."
+  exit 0
+fi
+
 # Retry reads and the idempotent enable operation, not dispatch POSTs.
 api_retry() {
   local attempt result
@@ -60,11 +65,13 @@ except (KeyError, ValueError, TypeError):
     sys.exit(2)
 
 try:
+    attempts_today = 0
     for run in runs:
         created = run["created_at"]
         created_at = datetime.fromisoformat(created.replace("Z", "+00:00")).astimezone(tz)
         if created_at.date() != today:
             continue
+        attempts_today += 1
         if run.get("conclusion") == "success" or run.get("status") in {
             "queued", "in_progress", "requested", "waiting", "pending"
         }:
@@ -72,6 +79,8 @@ try:
 except (KeyError, ValueError, TypeError, AttributeError):
     sys.exit(2)
 
+if attempts_today >= 6:
+    sys.exit(3)
 sys.exit(1)
 PY
 then
@@ -79,6 +88,10 @@ then
   exit 0
 else
   decision=$?
+  if (( decision == 3 )); then
+    log "Six runs attempted today without confirmation; human or Codex review is needed."
+    exit 1
+  fi
   if (( decision != 1 )); then
     log "Cannot validate workflow run data; refusing to guess."
     exit 1

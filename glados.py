@@ -1,40 +1,113 @@
-import requests,json,os
-# -------------------------------------------------------------------------------------------
-# github workflows
-# -------------------------------------------------------------------------------------------
-if __name__ == '__main__':
-# pushplus秘钥 申请地址 http://www.pushplus.plus
-    sckey = os.environ.get("PUSHPLUS_TOKEN", "")
-# 推送内容
-    sendContent = ''
-# glados账号cookie 直接使用数组 如果使用环境变量需要字符串分割一下
-    cookies = os.environ.get("GLADOS_COOKIE", "").split("&")
-    if cookies[0] == "":
-        print('未获取到COOKIE变量') 
-        cookies = []
-        exit(0)
-    url= "https://glados.cloud/api/user/checkin"
-    url2= "https://glados.cloud/api/user/status"
-    referer = 'https://glados.cloud/console/checkin'
-    origin = "https://glados.cloud"
-    useragent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36"
-    payload={
-        'token': 'glados.one'
-    }
-    for cookie in cookies:
-        checkin = requests.post(url,headers={'cookie': cookie ,'referer': referer,'origin':origin,'user-agent':useragent,'content-type':'application/json;charset=UTF-8'},data=json.dumps(payload))
-        state =  requests.get(url2,headers={'cookie': cookie ,'referer': referer,'origin':origin,'user-agent':useragent})
-    #--------------------------------------------------------------------------------------------------------#  
-        time = state.json()['data']['leftDays']
-        time = time.split('.')[0]
-        email = state.json()['data']['email']
-        if 'message' in checkin.text:
-            mess = checkin.json()['message']
-            print(email+'----结果--'+mess+'----剩余('+time+')天')  # 日志输出
-            sendContent += email+'----'+mess+'----剩余('+time+')天\n'
-        else:
-            requests.get('http://www.pushplus.plus/send?token=' + sckey + '&content='+email+'cookie已失效')
-            print('cookie已失效')  # 日志输出
-     #--------------------------------------------------------------------------------------------------------#   
-    if sckey != "":
-         requests.get('http://www.pushplus.plus/send?token=' + sckey + '&title='+email+'签到成功'+'&content='+sendContent)
+import os
+import re
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
+
+import requests
+
+
+ORIGIN = "https://glados.cloud"
+TAIPEI = timezone(timedelta(hours=8))
+ALREADY_RECORDED = "Today's observation logged. Return tomorrow for more points."
+
+
+class CheckinError(Exception):
+    pass
+
+
+def request_json(method, path, cookie, **kwargs):
+    try:
+        response = requests.request(
+            method,
+            ORIGIN + path,
+            headers={
+                "cookie": cookie,
+                "referer": ORIGIN + "/console/checkin",
+                "origin": ORIGIN,
+                "user-agent": "Mozilla/5.0",
+            },
+            timeout=(10, 20),
+            allow_redirects=False,
+            **kwargs,
+        )
+    except requests.RequestException as error:
+        # Exception text can contain request headers or URLs with secrets.
+        raise CheckinError("Request failed: " + type(error).__name__) from None
+    if response.status_code != 200:
+        raise CheckinError("GLaDOS returned HTTP " + str(response.status_code))
+    try:
+        payload = response.json()
+    except ValueError:
+        raise CheckinError("GLaDOS did not return JSON") from None
+    if not isinstance(payload, dict):
+        raise CheckinError("Unexpected GLaDOS response format")
+    return payload
+
+
+def checkin(cookie):
+    status = request_json("GET", "/api/user/status", cookie)
+    data = status.get("data")
+    if not isinstance(data, dict) or not data.get("email"):
+        raise CheckinError("Login could not be verified; check GLADOS_COOKIE")
+    try:
+        days = Decimal(str(data["leftDays"]))
+        if not days.is_finite():
+            raise ValueError("non-finite days")
+        days = int(days)
+    except (KeyError, InvalidOperation, ValueError, OverflowError):
+        raise CheckinError("Account status is missing valid remaining days") from None
+
+    result = request_json("POST", "/api/user/checkin", cookie, json={"token": "glados.one"})
+    message = result.get("message", "")
+    if not isinstance(message, str):
+        raise CheckinError("Check-in response has no valid message")
+    message = message.strip()
+    earned = re.fullmatch(r"Checkin! Got ([0-9]+) Points", message, flags=re.IGNORECASE)
+    if earned:
+        outcome = "earned " + earned.group(1) + " points"
+    elif message.casefold() == ALREADY_RECORDED.casefold():
+        outcome = "already recorded today (no new points reported)"
+    else:
+        raise CheckinError("Unrecognized check-in result; success is not confirmed")
+    return outcome + "; account status before check-in: " + str(days) + " days remaining"
+
+
+def main():
+    cookies = [value.strip() for value in os.environ.get("GLADOS_COOKIE", "").split("&") if value.strip()]
+    lines = []
+    failed = not cookies
+    if not cookies:
+        lines.append("FAILED: GLADOS_COOKIE is missing")
+    for index, cookie in enumerate(cookies, start=1):
+        try:
+            lines.append("Account " + str(index) + ": CONFIRMED, " + checkin(cookie))
+        except CheckinError as error:
+            failed = True
+            lines.append("Account " + str(index) + ": FAILED, " + str(error))
+
+    if not failed:
+        day = datetime.now(TAIPEI).date().isoformat()
+        lines.append("CHECKIN_CONFIRMED date=" + day + " accounts=" + str(len(cookies)))
+    for line in lines:
+        print(line)
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as stream:
+            stream.write("## GLaDOS check-in\n\n" + "\n\n".join(lines) + "\n")
+
+    pushplus_token = os.environ.get("PUSHPLUS_TOKEN", "")
+    if pushplus_token:
+        try:
+            notification = requests.post(
+                "https://www.pushplus.plus/send",
+                json={"token": pushplus_token, "title": "GLaDOS check-in", "content": "\n".join(lines)},
+                timeout=(10, 20),
+            )
+            notification.raise_for_status()
+        except requests.RequestException:
+            print("WARNING: PushPlus delivery failed; see Actions for the check-in result")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

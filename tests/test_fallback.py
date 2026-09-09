@@ -36,7 +36,7 @@ elif "/runs?" in endpoint:
             "status": fixture.get("run_status", "completed"),
             "conclusion": fixture["conclusion"],
         }]
-        print(json.dumps({"workflow_runs": runs}))
+        print(json.dumps({"workflow_runs": runs * fixture.get("run_count", 1)}))
 else:
     print("active" if (root / "enabled").exists() else fixture.get("state", "active"))
 '''
@@ -107,6 +107,12 @@ class FallbackTest(unittest.TestCase):
                 result, calls = self.invoke(**fixture)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(self.mutations(calls), [])
+
+    def test_persistent_failure_has_a_daily_retry_limit(self):
+        result, calls = self.invoke(conclusion="failure", run_count=6)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Six runs attempted today", result.stderr)
+        self.assertEqual(self.mutations(calls), [])
 
 
 if __name__ == "__main__":
