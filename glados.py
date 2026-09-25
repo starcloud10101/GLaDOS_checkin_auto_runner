@@ -44,11 +44,24 @@ def request_json(method, path, cookie, **kwargs):
     return payload
 
 
+def server_reply(payload):
+    # Only code/message are shown: they tell an expired cookie from an API
+    # change, while data can hold the account email.
+    parts = []
+    for key in ("code", "message"):
+        value = payload.get(key)
+        if isinstance(value, (str, int)) and not isinstance(value, bool):
+            text = " ".join(str(value).split())[:120]
+            if text:
+                parts.append(key + "=" + text)
+    return " (GLaDOS replied: " + ", ".join(parts) + ")" if parts else " (GLaDOS gave no code or message)"
+
+
 def checkin(cookie):
     status = request_json("GET", "/api/user/status", cookie)
     data = status.get("data")
     if not isinstance(data, dict) or not data.get("email"):
-        raise CheckinError("Login could not be verified; check GLADOS_COOKIE")
+        raise CheckinError("Login could not be verified; check GLADOS_COOKIE" + server_reply(status))
     try:
         days = Decimal(str(data["leftDays"]))
         if not days.is_finite():

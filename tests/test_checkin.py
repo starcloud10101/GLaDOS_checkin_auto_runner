@@ -53,7 +53,17 @@ class CheckinTest(unittest.TestCase):
         result, output, _, request = self.run_checkin(status={"message": "login required"})
         self.assertEqual(result, 1)
         self.assertIn("Login could not be verified", output)
+        self.assertIn("GLaDOS replied: message=login required", output)
         self.assertEqual(request.call_count, 1)
+
+    def test_invalid_login_reply_hides_account_data(self):
+        status = {"code": -2, "message": "please\nlogin", "data": {"note": "private@example.test"}}
+        result, output, _, _ = self.run_checkin(status=status)
+        self.assertEqual(result, 1)
+        self.assertIn("GLaDOS replied: code=-2, message=please login", output)
+        self.assertNotIn("private@example.test", output)
+        result, output, _, _ = self.run_checkin(status={"data": None})
+        self.assertIn("GLaDOS gave no code or message", output)
 
     def test_unknown_messages_are_not_false_success(self):
         for message in ("cookie expired", "Service temporarily unavailable", "success", None):
