@@ -71,6 +71,8 @@ class CheckinTest(unittest.TestCase):
                 result, output, summary, _ = self.run_checkin(message=message)
                 self.assertEqual(result, 1)
                 self.assertNotIn("CHECKIN_CONFIRMED", output + summary)
+                if message:
+                    self.assertIn("GLaDOS replied: message=" + message, output)
 
     def test_network_and_http_errors_fail_without_leaking_exception_text(self):
         with patch("glados.requests.request", side_effect=requests.Timeout("cookie-secret")):

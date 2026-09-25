@@ -81,7 +81,7 @@ def checkin(cookie):
     elif message.casefold() == ALREADY_RECORDED.casefold():
         outcome = "already recorded today (no new points reported)"
     else:
-        raise CheckinError("Unrecognized check-in result; success is not confirmed")
+        raise CheckinError("Unrecognized check-in result; success is not confirmed" + server_reply(result))
     return outcome + "; account status before check-in: " + str(days) + " days remaining"
 
 
