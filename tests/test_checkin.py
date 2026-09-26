@@ -36,6 +36,7 @@ class CheckinTest(unittest.TestCase):
         for call in request.call_args_list:
             self.assertEqual(call.kwargs["timeout"], (10, 20))
             self.assertFalse(call.kwargs["allow_redirects"])
+        self.assertEqual(request.call_args_list[1].kwargs["json"], {"token": "glados.cloud"})
 
     def test_already_recorded_is_not_reported_as_new_points(self):
         result, output, summary, _ = self.run_checkin()
