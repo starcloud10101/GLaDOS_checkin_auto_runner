@@ -70,7 +70,7 @@ def checkin(cookie):
     except (KeyError, InvalidOperation, ValueError, OverflowError):
         raise CheckinError("Account status is missing valid remaining days") from None
 
-    result = request_json("POST", "/api/user/checkin", cookie, json={"token": "glados.cloud"})
+    result = request_json("POST", "/api/user/checkin", cookie, json={"token": "glados.one"})
     message = result.get("message", "")
     if not isinstance(message, str):
         raise CheckinError("Check-in response has no valid message")
